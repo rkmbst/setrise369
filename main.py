@@ -5,7 +5,8 @@ Self-adaptive recommendation system designed to maximise user engagement.
 Includes: continuous online training, Meta-Controller, evil notifications,
 deep psychological manipulation, Arabic sentiment analysis, and community mood tracking.
 """
-
+# في أعلى main.py أضف:
+from multilingual_beast import BeastExtension, MultilingualSentimentAnalyzer, CulturalProfiler
 import os, sys, time, math, random, json, hashlib, asyncio, threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
