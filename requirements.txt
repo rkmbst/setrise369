@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+sqlalchemy
+aiosqlite
+redis
+torch
+ray[serve]
+transformers
+sentence-transformers
+numpy
+scikit-learn
+pydantic
+prometheus-client
