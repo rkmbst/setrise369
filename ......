@@ -1,0 +1,367 @@
+تمام، فهمت قصدك الآن. أنت تريد وحشًا صغيرًا داخل كل هاتف (تطبيق Flutter) يقوم بـ:
+
+1. مراقبة كل تفاعلات المستخدم (نقرات، تمرير، شاشات، جلسات، تعليقات).
+2. تخزين البيانات محليًا (حتى بدون إنترنت).
+3. التعلم البسيط محليًا (مثلاً حساب أنماط الاستخدام).
+4. إرسال البيانات دوريًا إلى الخادم الكبير (Python).
+5. استقبال التوصيات من الخادم وعرضها.
+6. إرسال إشعارات محلية لإعادة المستخدم.
+
+هذا هو العميل الذكي (Smart Client). سأكتب لك كود Dart كامل يشمل كل ذلك. يمكنك وضعه في ملف واحد ورفعه إلى مشروع Flutter.
+
+---
+
+📱 الملف الكامل: beast_client.dart
+
+```dart
+// beast_client.dart – الوحش الصغير داخل تطبيق Flutter
+// يراقب، يتعلم، يرسل، ويستقبل التوصيات
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart' as path;
+
+class BeastConfig {
+  static const String serverUrl = "http://YOUR_SERVER_IP:8000"; // غيّر إلى عنوانك
+  static const int flushIntervalSeconds = 10; // كل 10 ثوانٍ
+  static const int maxBufferSize = 100; // أقصى أحداث قبل الإرسال الفوري
+}
+
+// نموذج الحدث
+class TrackedEvent {
+  final String type;
+  final String screen;
+  final Map<String, dynamic> data;
+  final DateTime timestamp;
+
+  TrackedEvent({required this.type, required this.screen, required this.data, DateTime? timestamp})
+      : timestamp = timestamp ?? DateTime.now();
+
+  Map<String, dynamic> toJson() => {
+        'event_type': type,
+        'screen': screen,
+        'data': data,
+        'timestamp': timestamp.toIso8601String(),
+      };
+}
+
+// الوحش الصغير
+class BeastClient {
+  static final BeastClient _instance = BeastClient._internal();
+  factory BeastClient() => _instance;
+  BeastClient._internal();
+
+  final List<TrackedEvent> _buffer = [];
+  Timer? _flushTimer;
+  String _userId = 'anonymous';
+  String _currentScreen = 'unknown';
+  DateTime? _sessionStart;
+  Database? _db;
+  FlutterLocalNotificationsPlugin? _notificationsPlugin;
+
+  // تهيئة الوحش الصغير
+  Future<void> init({
+    required String userId,
+    required BuildContext context,
+  }) async {
+    _userId = userId;
+    _sessionStart = DateTime.now();
+
+    // تهيئة قاعدة البيانات المحلية
+    await _initDatabase();
+
+    // تهيئة الإشعارات المحلية
+    await _initNotifications();
+
+    // بدء الإرسال الدوري
+    _flushTimer = Timer.periodic(
+      Duration(seconds: BeastConfig.flushIntervalSeconds),
+      (_) => _flush(),
+    );
+
+    // تسجيل بدء الجلسة
+    _track('session_start', {});
+  }
+
+  // تهيئة قاعدة البيانات المحلية (SQFlite)
+  Future<void> _initDatabase() async {
+    final dbPath = await getDatabasesPath();
+    _db = await openDatabase(
+      path.join(dbPath, 'beast_client.db'),
+      version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_json TEXT NOT NULL,
+            sent INTEGER DEFAULT 0
+          )
+        ''');
+        await db.execute('''
+          CREATE TABLE user_profile (
+            user_id TEXT PRIMARY KEY,
+            behavior_patterns TEXT
+          )
+        ''');
+      },
+    );
+  }
+
+  // تهيئة الإشعارات المحلية
+  Future<void> _initNotifications() async {
+    _notificationsPlugin = FlutterLocalNotificationsPlugin();
+    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const iosSettings = IOSInitializationSettings();
+    const initSettings = InitializationSettings(android: androidSettings, iOS: iosSettings);
+    await _notificationsPlugin!.initialize(initSettings);
+  }
+
+  // تسجيل حدث
+  void _track(String type, Map<String, dynamic> data) {
+    final event = TrackedEvent(type: type, screen: _currentScreen, data: data);
+    _buffer.add(event);
+    // حفظ في قاعدة البيانات كنسخة احتياطية
+    _db?.insert('events', {'event_json': jsonEncode(event.toJson()), 'sent': 0});
+
+    if (_buffer.length >= BeastConfig.maxBufferSize) {
+      _flush();
+    }
+  }
+
+  // إرسال الأحداث المتراكمة إلى الخادم
+  Future<void> _flush() async {
+    if (_buffer.isEmpty) return;
+    final events = List<Map<String, dynamic>>.from(_buffer.map((e) => e.toJson()));
+    _buffer.clear();
+    try {
+      final response = await http.post(
+        Uri.parse('${BeastConfig.serverUrl}/v5/events/batch'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'user_id': _userId, 'events': events}),
+      ).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        // تم الإرسال بنجاح، نحذف النسخة الاحتياطية
+        await _db?.delete('events', where: 'sent = 0');
+      } else {
+        _restoreBuffer(events);
+      }
+    } catch (e) {
+      _restoreBuffer(events);
+    }
+  }
+
+  void _restoreBuffer(List<Map<String, dynamic>> events) {
+    // إعادة الأحداث إلى المخزن المؤقت إذا فشل الإرسال
+    _buffer.addAll(events.map((e) => TrackedEvent(
+      type: e['event_type'],
+      screen: e['screen'],
+      data: e['data'],
+      timestamp: DateTime.parse(e['timestamp']),
+    )));
+  }
+
+  // تغيير الشاشة
+  void setScreen(String screen) {
+    if (_currentScreen != screen) {
+      _track('screen_exit', {'duration_ms': _currentScreenDuration()});
+      _currentScreen = screen;
+      _track('screen_view', {});
+    }
+  }
+
+  int _currentScreenDuration() {
+    if (_sessionStart == null) return 0;
+    return DateTime.now().difference(_sessionStart!).inMilliseconds;
+  }
+
+  // تتبع زر
+  void trackButton(String buttonName, {Map<String, dynamic>? extra}) {
+    _track('button_click', {'button': buttonName, ...?extra});
+  }
+
+  // تتبع تمرير
+  void trackScroll(String direction, double offset) {
+    _track('scroll', {'direction': direction, 'offset': offset});
+  }
+
+  // تتبع تعليق
+  void trackComment(String text) {
+    _track('comment', {'text': text});
+  }
+
+  // تتبع فيديو (إيقاف/استئناف)
+  void trackVideoEvent(String videoId, String action, double positionMs) {
+    _track('video_$action', {'video_id': videoId, 'position_ms': positionMs});
+  }
+
+  // جلب توصيات من الخادم
+  Future<List<Map<String, dynamic>>> getRecommendations({int topK = 20}) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${BeastConfig.serverUrl}/v5/recommend'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_id': _userId,
+          'context': {
+            'screen': _currentScreen,
+            'hour': DateTime.now().hour,
+            'device': Platform.isAndroid ? 'android' : 'ios',
+          },
+          'top_k': topK,
+        }),
+      ).timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return (data['recommendations'] as List).cast<Map<String, dynamic>>();
+      }
+    } catch (e) {
+      // فشل الاتصال – يمكن إرجاع توصيات محلية بسيطة
+    }
+    return [];
+  }
+
+  // إرسال إشعار محلي
+  Future<void> showLocalNotification(String title, String body) async {
+    if (_notificationsPlugin == null) return;
+    const androidDetails = AndroidNotificationDetails(
+      'beast_channel',
+      'Beast Notifications',
+      importance: Importance.high,
+      priority: Priority.high,
+    );
+    const iosDetails = IOSNotificationDetails();
+    const details = NotificationDetails(android: androidDetails, iOS: iosDetails);
+    await _notificationsPlugin!.show(0, title, body, details);
+  }
+
+  // تعلم محلي بسيط (حساب أنماط الاستخدام)
+  Map<String, double> analyzeLocalBehavior() {
+    // هذه دالة بسيطة – يمكن توسيعها
+    return {
+      'avg_session_duration': _sessionStart != null ? DateTime.now().difference(_sessionStart!).inSeconds / 60 : 0,
+      'screen_count': _currentScreen.length,
+    };
+  }
+
+  // تنظيف عند إغلاق التطبيق
+  void dispose() {
+    _flushTimer?.cancel();
+    _db?.close();
+  }
+}
+```
+
+---
+
+🚀 طريقة الاستخدام في main.dart
+
+```dart
+import 'package:flutter/material.dart';
+import 'beast_client.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: HomeScreen(),
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  @override
+  _HomeScreenState createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // تهيئة الوحش الصغير
+    BeastClient().init(
+      userId: 'user_123', // استبدل بمعرف المستخدم الفعلي
+      context: context,
+    );
+    BeastClient().setScreen('HomeScreen');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Home')),
+      body: ListView.builder(
+        itemCount: 100,
+        itemBuilder: (ctx, i) {
+          return ListTile(
+            title: Text('Item $i'),
+            onTap: () {
+              BeastClient().trackButton('item_$i');
+              // يمكن جلب توصيات وعرضها
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+```
+
+---
+
+📦 المتطلبات في pubspec.yaml
+
+```yaml
+dependencies:
+  http: ^1.1.0
+  shared_preferences: ^2.2.0
+  flutter_local_notifications: ^15.0.0
+  sqflite: ^2.3.0
+  path: ^1.8.0
+```
+
+---
+
+🔄 الربط مع الخادم Python
+
+في main.py أضف نقطة نهاية لاستقبال الأحداث:
+
+```python
+from fastapi import Request
+
+@app.post("/v5/events/batch")
+async def receive_batch(request: Request):
+    data = await request.json()
+    user_id = data.get("user_id")
+    events = data.get("events", [])
+    for ev in events:
+        # تحديث نفسية المستخدم أو النموذج
+        await brain.process_feedback.remote(
+            user_id=user_id,
+            item_id=ev.get("data", {}).get("video_id", ""),
+            reward=0.5,  # يمكن حسابها من نوع الحدث
+            event_type=ev.get("event_type"),
+            duration_ms=ev.get("data", {}).get("duration_ms", 0),
+        )
+    return {"status": "ok", "received": len(events)}
+```
+
+---
+
+✅ الخلاصة
+
+الآن لديك:
+
+· Python (الخادم الكبير): الدماغ الذكي الذي يتعلم ويتلاعب.
+· Dart (الوحش الصغير): يراقب المستخدم، يخزن، يتعلم محلياً، ويرسل للخادم.
+
+بمجرد دمج هذا الملف في مشروع Flutter، سيبدأ التطبيق في إرسال كل شيء إلى الخادم. هل تريد أن نضيف تحليل المشاعر محلياً أو إرسال إشعارات ذكية من الخادم؟
