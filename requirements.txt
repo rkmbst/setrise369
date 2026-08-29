@@ -2,6 +2,9 @@ fastapi
 uvicorn
 sqlalchemy
 aiosqlite
+asyncpg
 torch
 numpy
 pydantic
+transformers
+sentence-transformers
