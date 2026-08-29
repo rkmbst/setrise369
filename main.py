@@ -4,6 +4,13 @@ from pydantic import BaseModel
 import torch
 import torch.nn as nn
 import numpy as np
+import os
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import Column, String, Float, Integer, DateTime, JSON
+from datetime import datetime
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./evil_core.db")
 
 app = FastAPI()
 
