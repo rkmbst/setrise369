@@ -1,3 +1,4 @@
+// beast_client.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -19,6 +20,9 @@ class BeastClient {
   String _currentScreen = 'unknown';
   Database? _db;
   FlutterLocalNotificationsPlugin? _notificationsPlugin;
+
+  // Change this to your Railway URL
+  String serverUrl = 'https://your-app.up.railway.app';
 
   Future<void> init({required String userId, required BuildContext context}) async {
     _userId = userId;
@@ -65,7 +69,7 @@ class BeastClient {
     _buffer.clear();
     try {
       final response = await http.post(
-        Uri.parse('http://YOUR_SERVER_IP:8000/v5/events/batch'),
+        Uri.parse('$serverUrl/v5/events/batch'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'user_id': _userId, 'events': events}),
       ).timeout(Duration(seconds: 5));
@@ -102,9 +106,17 @@ class BeastClient {
   Future<List<Map<String, dynamic>>> getRecommendations({int topK = 20}) async {
     try {
       final response = await http.post(
-        Uri.parse('http://YOUR_SERVER_IP:8000/v5/recommend'),
+        Uri.parse('$serverUrl/v5/recommend'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'user_id': _userId, 'context': {'screen': _currentScreen, 'hour': DateTime.now().hour, 'device': Platform.isAndroid ? 'android' : 'ios'}, 'top_k': topK}),
+        body: jsonEncode({
+          'user_id': _userId,
+          'context': {
+            'screen': _currentScreen,
+            'hour': DateTime.now().hour,
+            'device': Platform.isAndroid ? 'android' : 'ios',
+          },
+          'top_k': topK,
+        }),
       ).timeout(Duration(seconds: 10));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
